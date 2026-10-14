@@ -85,6 +85,20 @@ class Sample:
     meta: Mapping[str, Any] = field(default_factory=dict)
 
     @property
+    def array(self) -> np.ndarray[Any, Any]:
+        """The payload as an array (raises ``TypeError`` for dict payloads)."""
+        if not isinstance(self.data, np.ndarray):
+            raise TypeError(f"{self.source_id}: payload is a dict, use .columns")
+        return self.data
+
+    @property
+    def columns(self) -> dict[str, np.ndarray[Any, Any]]:
+        """The payload as a dict of columns, e.g. EVENT ``t,x,y,p`` (``TypeError`` otherwise)."""
+        if not isinstance(self.data, dict):
+            raise TypeError(f"{self.source_id}: payload is an array, use .array")
+        return self.data
+
+    @property
     def nbytes(self) -> int:
         """Payload size in bytes (used for byte-bounded buffers)."""
         return payload_nbytes(self.data)

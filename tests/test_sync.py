@@ -56,7 +56,7 @@ def test_tick_windows_and_explicit_empty_sources() -> None:
 def test_events_are_split_at_tick_boundaries() -> None:
     e = ListAdapter("e", [events("e", [1, 5, 9, 12, 25])], modality=Modality.EVENT)
     ticks = run_ticks(Aligner([e], AlignerConfig(tick_ns=10, start_ns=0)))
-    got = [[list(s.data["t"]) for s in t.samples["e"]] for t in ticks]
+    got = [[list(s.columns["t"]) for s in t.samples["e"]] for t in ticks]
     assert got == [[[1, 5, 9]], [[12]], [[25]]]
     assert ticks[0].samples["e"][0].t_master_ns == 9
 
@@ -76,7 +76,7 @@ def test_start_end_and_max_ticks() -> None:
     assert al.snapshot()["a.before_start"] == 4
     e = ListAdapter("e", [events("e", [5, 25, 35, 41, 55])], modality=Modality.EVENT)
     ticks = run_ticks(Aligner([e], AlignerConfig(tick_ns=10, start_ns=20, end_ns=40)))
-    flat = [int(x) for t in ticks for s in t.samples["e"] for x in s.data["t"]]
+    flat = [int(x) for t in ticks for s in t.samples["e"] for x in s.columns["t"]]
     assert flat == [25, 35]
     ticks = run_ticks(
         Aligner(
@@ -214,12 +214,12 @@ def test_live_deadline_closes_ticks_and_counts_late() -> None:
     b.push(events("b", [4, 8, 13]))
     assert al.step_live(11) == []  # deadline is 12
     (t0,) = al.step_live(12)
-    assert _ts(t0, "a") == [3] and [list(s.data["t"]) for s in t0.samples["b"]] == [[4, 8]]
+    assert _ts(t0, "a") == [3] and [list(s.columns["t"]) for s in t0.samples["b"]] == [[4, 8]]
     a.push(imu("a", 7))  # arrives after tick 0 closed → late
     a.push(imu("a", 15))
     (t1,) = al.step_live(22)
     assert _ts(t1, "a") == [15]
-    assert [list(s.data["t"]) for s in t1.samples["b"]] == [[13]]
+    assert [list(s.columns["t"]) for s in t1.samples["b"]] == [[13]]
     assert al.snapshot()["a.late"] == 1
     ticks = al.step_live(52)
     assert [t.index for t in ticks] == [2, 3, 4]

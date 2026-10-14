@@ -47,9 +47,9 @@ def test_slice_events_restamps_to_last_event() -> None:
     s = events("e", [10, 20, 30, 40])
     part = slice_events(s, 0, 2)
     assert part.t_master_ns == 20 and part.t_source_ns == 20
-    assert list(part.data["t"]) == [10, 20]
+    assert list(part.columns["t"]) == [10, 20]
     empty = slice_events(s, 2, 2)
-    assert len(empty.data["t"]) == 0
+    assert len(empty.columns["t"]) == 0
 
 
 @pytest.mark.parametrize(
@@ -103,7 +103,7 @@ def test_sample_tick_spec_roundtrip() -> None:
     assert back.index == 0 and back.tick_ns == 10
     assert set(back.samples) == {"dvs0", "rgb0", "mic0"}
     assert back.samples["mic0"] == []
-    np.testing.assert_array_equal(back.samples["dvs0"][0].data["t"], [1, 2, 3])
+    np.testing.assert_array_equal(back.samples["dvs0"][0].columns["t"], [1, 2, 3])
     assert back.samples["rgb0"][0].meta == {"encoding": "mono8"}
     spec = SourceSpec(
         "a", Modality.IMU, 1000.0, {"frame_id": "imu"}, ClockMode.ESTIMATED, 5, 6, 1.5, 7, 200
@@ -143,7 +143,7 @@ def test_stream_estimated_mode_shifts_event_t() -> None:
     st = Stream(ad)
     out = list(st)
     assert all(s.t_master_ns - s.t_source_ns == 1000 for s in out)
-    assert all(int(s.data["t"][-1]) == s.t_master_ns for s in out)
+    assert all(int(s.columns["t"][-1]) == s.t_master_ns for s in out)
     spec = st.spec()
     assert spec.clock_mode is ClockMode.ESTIMATED and spec.offset_ns == 1000
     assert Stream(ad, estimate_offsets=False).clock.mode is ClockMode.FIXED

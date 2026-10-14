@@ -94,7 +94,7 @@ def test_accumulate_coalesces_and_caps() -> None:
     c = events("e", [2 * MS])
     out = _run(th, [a, b, c])
     assert len(out) == 2
-    assert list(out[0].data["t"]) == [20, 30]
+    assert list(out[0].columns["t"]) == [20, 30]
     assert out[0].meta["accumulated"] == 2
     th_cap = Throttle(
         ThrottleConfig(
@@ -106,7 +106,7 @@ def test_accumulate_coalesces_and_caps() -> None:
         EV_SPEC,
     )
     out = _run(th_cap, [events("e", [1, 2, 3, 4, 5])])
-    assert list(out[0].data["t"]) == [4, 5]
+    assert list(out[0].columns["t"]) == [4, 5]
 
 
 def test_accumulate_on_non_event_falls_back_to_drop() -> None:
