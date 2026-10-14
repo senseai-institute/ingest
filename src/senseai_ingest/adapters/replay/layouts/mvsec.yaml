@@ -1,0 +1,47 @@
+# MVSEC (Zhu et al., RA-L 2018) — <sequence>_data.hdf5.
+#   /davis/left/events : (N, 4) float64 [x, y, t (s, ROS time), p (-1/+1)]
+#   /davis/left/image_raw (N, H, W) uint8 + image_raw_ts (s); /davis/left/imu (N, 6) + imu_ts (s)
+# IMU column order is taken as [ax, ay, az, gx, gy, gz]; verify with `inspect`.
+name: mvsec
+description: MVSEC <sequence>_data.hdf5 (DAVIS events, frames, IMU)
+detect: []
+sources:
+  - id: events_left
+    modality: event
+    file: "*_data.hdf5"
+    events:
+      x: {path: /davis/left/events, column: 0}
+      y: {path: /davis/left/events, column: 1}
+      t: {path: /davis/left/events, column: 2}
+      p: {path: /davis/left/events, column: 3}
+    polarity: sign
+    time: {unit: s}
+    meta: {width: 346, height: 260, camera: left}
+  - id: events_right
+    modality: event
+    file: "*_data.hdf5"
+    events:
+      x: {path: /davis/right/events, column: 0}
+      y: {path: /davis/right/events, column: 1}
+      t: {path: /davis/right/events, column: 2}
+      p: {path: /davis/right/events, column: 3}
+    polarity: sign
+    time: {unit: s}
+    meta: {width: 346, height: 260, camera: right}
+    optional: true
+  - id: frames_left
+    modality: frame
+    file: "*_data.hdf5"
+    t: /davis/left/image_raw_ts
+    data: /davis/left/image_raw
+    time: {unit: s}
+    meta: {encoding: mono8}
+    optional: true
+  - id: imu_left
+    modality: imu
+    file: "*_data.hdf5"
+    t: /davis/left/imu_ts
+    data: /davis/left/imu
+    time: {unit: s}
+    meta: {frame_id: davis_left}
+    optional: true

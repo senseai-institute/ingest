@@ -1,0 +1,104 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "senseai-ingest"
+version = "0.1.0"
+description = "Sense-agnostic sensor ingress: replay/live adapters, one master clock, timestamp-aligned tick streams."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "SenseAI Institute" }]
+requires-python = ">=3.11"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering",
+  "Typing :: Typed",
+]
+dependencies = [
+  "numpy>=1.26",
+  "h5py>=3.10",
+  "protobuf>=5.27.2",
+  "structlog>=24.1",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# rclpy is not on PyPI; it comes from the ROS 2 (Humble/Jazzy) install.
+ros2 = ["rosbags>=0.10"]
+dvs = []  # vendor SDKs (Metavision, dv-processing) are installed from vendor channels
+audio = ["soundfile>=0.12", "sounddevice>=0.4"]
+images = ["pillow>=10.0"]
+live = ["pyserial>=3.5", "python-can>=4.3", "opencv-python-headless>=4.9"]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "types-protobuf>=5.28",
+  "types-PyYAML>=6.0",
+  "grpcio-tools==1.66.2",  # gencode 5.27 -> runs on protobuf 5.27..7.x
+  "pillow>=10.0",
+  "rosbags>=0.10",
+]
+
+[project.scripts]
+senseai-ingest = "senseai_ingest.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/senseai-institute/ingest"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/senseai_ingest"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "examples", "benchmarks", "launch", "README.md", "LICENSE", "NOTICE", "Makefile"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["src/senseai_ingest/schema/sample_pb2.py", "src/senseai_ingest/schema/sample_pb2.pyi", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF", "D"]
+ignore = ["D105", "D107", "D203", "D213", "D413", "N818"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+"benchmarks/**" = ["D"]
+"examples/**" = ["D"]
+"launch/**" = ["D"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests", "benchmarks", "examples"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["h5py", "h5py.*", "rclpy", "rclpy.*", "senseai_ingest_msgs", "senseai_ingest_msgs.*",
+          "serial", "serial.*", "can", "can.*", "cv2", "sounddevice", "soundfile",
+          "metavision_core", "metavision_core.*", "dv_processing", "rosbags", "rosbags.*",
+          "launch", "launch.*", "launch_ros", "launch_ros.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["senseai_ingest.schema.sample_pb2"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["senseai_ingest"]
+branch = true
+omit = ["*/schema/sample_pb2.py"]
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@abstractmethod", "\\.\\.\\."]
+fail_under = 85
+show_missing = true
+skip_covered = true

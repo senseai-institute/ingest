@@ -1,0 +1,22 @@
+# DSEC (Gehrig et al., RA-L 2021) — one sequence directory, e.g. zurich_city_04_a/
+#   events/{left,right}/events.h5 : /events/{t,x,y,p}, /t_offset (µs), /ms_to_idx
+#   t is µs relative to t_offset; master = (t + t_offset) µs.
+# Frames (images/left/rectified/*.png + images/timestamps.txt) are PNG, not HDF5; they are
+# added by senseai_ingest.adapters.replay.dsec.DsecReplay.from_sequence.
+name: dsec
+description: DSEC sequence directory (events HDF5 + PNG frames)
+detect: ["**/events/left/events.h5"]
+sources:
+  - id: events_left
+    modality: event
+    file: "**/events/left/events.h5"
+    events: {t: /events/t, x: /events/x, y: /events/y, p: /events/p}
+    time: {unit: us, offset: {dataset: /t_offset}}
+    meta: {width: 640, height: 480, camera: left}
+  - id: events_right
+    modality: event
+    file: "**/events/right/events.h5"
+    events: {t: /events/t, x: /events/x, y: /events/y, p: /events/p}
+    time: {unit: us, offset: {dataset: /t_offset}}
+    meta: {width: 640, height: 480, camera: right}
+    optional: true
