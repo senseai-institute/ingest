@@ -74,7 +74,7 @@ ignore = ["D105", "D107", "D203", "D213", "D413", "N818"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "benchmarks", "examples"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]

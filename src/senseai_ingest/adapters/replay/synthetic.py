@@ -115,6 +115,11 @@ class SyntheticReplay(ReplayAdapter):
         rel = t_true_ns - self.t_start_ns
         return int(t_true_ns - self.device_offset_ns + round(self.drift_ppm * 1e-6 * rel))
 
+    def true_time(self, t_source_ns: int) -> int:
+        """Invert :meth:`device_time`: the true (master) time of a device timestamp."""
+        d = self.drift_ppm * 1e-6
+        return round((t_source_ns + self.device_offset_ns + d * self.t_start_ns) / (1 + d))
+
     def _read_once(self) -> Iterator[Sample]:
         rng = np.random.default_rng(self.seed)
         period = 1e9 / self.rate_hz
