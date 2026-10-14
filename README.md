@@ -1,5 +1,7 @@
 # senseai-ingest
 
+[![CI](https://github.com/senseai-institute/ingest/actions/workflows/ci.yml/badge.svg)](https://github.com/senseai-institute/ingest/actions/workflows/ci.yml)
+
 Sense-agnostic ingress for the SenseAI perception layer: it gets bytes off sensors
 (or recordings), puts them on one clock, and hands them to downstream tokenizers
 as one uniform stream of timestamp-aligned ticks.
@@ -209,7 +211,10 @@ and fits `drift_ppm` from successive estimates. `jitter_ns` is the p99 residual
 > **Limitation (by design):** the median absorbs the *constant* part of transport latency into
 > the offset. Arrival times can't distinguish a constant latency from a clock offset. Removing
 > that bias requires hardware sync (PTP or trigger lines, which you'd declare as
-> `ClockMode.FIXED`) or a measured per-device latency.
+> `ClockMode.FIXED`) or a measured per-device latency, declared as
+> `AlignerConfig(latency_ns={"rgb0": 4_000_000})`, `SourceSpec.meta["latency_ns"]` or
+> `--latency-ms rgb0=4.0`. The clock then subtracts it from every arrival time before
+> estimating, and records it in the spec.
 
 **Replay (`ClockMode.FIXED`).** Each dataset layout declares how to convert its timestamps to ns.
 Examples:
@@ -335,7 +340,7 @@ back with `TickReader`.
 
 | Dataset | Entry point | Sources | Notes |
 |---|---|---|---|
-| DSEC | `DsecReplay.from_sequence(seq_dir)` | `events_left/right`, `rgb_left/right` | Events: `events/<cam>/events.h5`, `t` µs relative to `/t_offset`. Frames: `images/<cam>/rectified/*.png` plus `images/timestamps.txt` (needs `[images]`). The public DSEC release has no IMU stream in this layout (verify against your download), so the "4 sources" acceptance uses 2 event + 2 frame cameras. |
+| DSEC | `DsecReplay.from_sequence(seq_dir)` | `events_left/right`, `rgb_left/right`, `imu` | Events: `events/<cam>/events.h5`, `t` µs relative to `/t_offset`. Frames: `images/<cam>/rectified/*.png` plus `images/timestamps.txt` (needs `[images]`). IMU: DSEC ships it as ROS bags (`lidar_imu.zip`); any `*.bag` under the sequence directory is scanned for an IMU topic (needs `[ros2]`). |
 | M3ED | `M3edReplay.from_sequence(file_or_dir)` | `events_left/right`, `rgb`, `mono_left`, `imu` | `layouts/m3ed.yaml`, µs. Ouster LiDAR is raw packets in M3ED and isn't decoded in Gate 1. |
 | MVSEC | `MvsecReplay.from_sequence(file_or_dir)` | `events_left/right`, `frames_left`, `imu_left` | `layouts/mvsec.yaml`: packed (N,4) float64 events, ROS-time seconds, ±1 polarity. |
 | rosbag | `RosbagReplay.from_bag(bag)` | one per topic | rosbag1 or rosbag2 via `rosbags`. Supports `sensor_msgs/Imu`, `sensor_msgs/Image` and `dvs_msgs/EventArray` (MVSEC bags). |

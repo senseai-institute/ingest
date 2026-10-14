@@ -7,7 +7,10 @@ Quirks handled here:
 * event ``t`` is µs relative to the scalar dataset ``/t_offset`` (µs);
 * frames are ``images/<cam>/rectified/NNNNNN.png`` with one absolute µs timestamp per line in
   ``images/timestamps.txt`` (shared by both cameras). PNG decoding needs Pillow
-  (``pip install senseai-ingest[images]``).
+  (``pip install senseai-ingest[images]``);
+* IMU (and LiDAR) were released later as ROS bags (``lidar_imu.zip``). Any ``*.bag`` found under
+  the sequence directory is scanned for ``sensor_msgs/Imu`` topics, which become the ``imu``
+  source (needs ``pip install senseai-ingest[ros2]``). LiDAR packets are not decoded.
 """
 
 from __future__ import annotations
@@ -17,12 +20,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import structlog
 
 from senseai_ingest.adapters.base import Adapter, AdapterNotAvailable, ReplayAdapter
 from senseai_ingest.adapters.replay.hdf5 import LayoutError, open_layout
 from senseai_ingest.stream import ClockMode, Modality, Sample, SourceSpec
 
 __all__ = ["DsecImageReplay", "DsecReplay"]
+
+log = structlog.get_logger(__name__)
 
 
 class DsecImageReplay(ReplayAdapter):
@@ -104,9 +110,10 @@ class DsecReplay:
         *,
         sources: Sequence[str] | None = None,
         frames: bool = True,
+        imu: bool = True,
         **kw: Any,
     ) -> list[Adapter]:
-        """Return adapters for ``events_left/right`` and (if present) ``rgb_left/right``.
+        """Return adapters for ``events_left/right``, ``rgb_left/right`` and ``imu`` (if present).
 
         ``kw`` (``start_ns``, ``end_ns``, ``speed``, ``loop``) is passed to every adapter.
         """
@@ -124,8 +131,33 @@ class DsecReplay:
                     sid = f"rgb_{cam}"
                     if (images / cam).is_dir() and (wanted is None or sid in wanted):
                         adapters.append(DsecImageReplay(images, cam, source_id=sid, **kw))
+        if imu and (wanted is None or "imu" in wanted):
+            adapters += _imu_from_bags(root, **kw)
         if wanted is not None:
             missing = wanted - {a.source_id for a in adapters}
             if missing:
                 raise LayoutError(f"DSEC: sources not found under {root}: {sorted(missing)}")
         return adapters
+
+
+def _imu_from_bags(root: Path, **kw: Any) -> list[Adapter]:
+    """Return one ``imu`` adapter for the first ``sensor_msgs/Imu`` topic in any bag under root."""
+    bags = sorted(p for p in root.glob("**/*.bag") if p.is_file())
+    bags += sorted(p for p in root.glob("**/metadata.yaml") if p.parent != root)
+    if not bags:
+        return []
+    try:
+        from senseai_ingest.adapters.replay.rosbag import RosbagReplay
+    except ImportError:  # pragma: no cover - rosbags is a dev dependency
+        return []
+    for bag in bags:
+        bag_path = bag.parent if bag.name == "metadata.yaml" else bag
+        try:
+            found = RosbagReplay.from_bag(bag_path, **kw)
+        except AdapterNotAvailable:
+            log.warning("dsec.imu_skipped", bag=str(bag_path), reason="rosbags not installed")
+            return []
+        imus = [a for a in found if a.spec().modality is Modality.IMU]
+        if imus:
+            return [RosbagReplay(bag_path, imus[0].topic, source_id="imu", **kw)]
+    return []

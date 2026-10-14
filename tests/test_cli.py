@@ -191,3 +191,37 @@ def test_clock_mode_flag_reaches_specs(m3ed_file: Path, tmp_path: Path) -> None:
     )
     with TickReader(out) as r:
         assert r.specs()["imu"].clock_mode is ClockMode.ESTIMATED
+
+
+def test_parse_latency() -> None:
+    from senseai_ingest.cli import parse_latency
+
+    assert parse_latency("rgb0=4.0, dvs0=0.25") == {"rgb0": 4_000_000, "dvs0": 250_000}
+    assert parse_latency(None) == {}
+    with pytest.raises(SystemExit, match="latency"):
+        parse_latency("rgb0=fast")
+
+
+def test_replay_latency_flag(m3ed_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "t.h5"
+    assert (
+        main(
+            [
+                "replay",
+                "--dataset",
+                "m3ed",
+                "--path",
+                str(m3ed_file),
+                "--max-ticks",
+                "20",
+                "--estimate-offsets",
+                "--latency-ms",
+                "imu=1.5",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    with TickReader(out) as r:
+        assert r.specs()["imu"].meta["latency_ns"] == 1_500_000
