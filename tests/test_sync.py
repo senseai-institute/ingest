@@ -259,3 +259,17 @@ def test_live_stops_at_max_ticks() -> None:
     al, _, _ = _live(max_ticks=2)
     assert len(al.step_live(1000)) == 2
     assert al.stats()["sync_jitter_p99_ns"] == 0.0
+
+
+def test_latency_config_reaches_streams_and_is_validated() -> None:
+    src = SyntheticReplay("imu0", Modality.IMU, rate_hz=1000, duration_s=0.3, latency_ns=3 * MS)
+    plain = Aligner([src], AlignerConfig(tick_ns=10 * MS))
+    fixed = Aligner([src], AlignerConfig(tick_ns=10 * MS, latency_ns={"imu0": 3 * MS}))
+    run_ticks(plain)
+    run_ticks(fixed)
+    # with the latency declared, aligned times match the true times (offset ≈ 0)
+    assert abs(plain.specs()["imu0"].offset_ns - 3 * MS) < 100_000
+    assert abs(fixed.specs()["imu0"].offset_ns) < 100_000
+    assert fixed.specs()["imu0"].meta["latency_ns"] == 3 * MS
+    with pytest.raises(ValueError, match="latency_ns config for unknown"):
+        Aligner([src], AlignerConfig(latency_ns={"nope": 1}))

@@ -145,3 +145,19 @@ def test_errors_and_helpers(bag: Path, capsys: pytest.CaptureFixture[str]) -> No
         _image(Img())
     assert main(["replay", "--dataset", "rosbag", "--path", str(bag), "--json"]) == 0
     assert '"imu"' in capsys.readouterr().out
+
+
+def test_dsec_picks_up_imu_from_lidar_imu_bag(bag: Path, dsec_dir: Path, tmp_path: Path) -> None:
+    import shutil
+
+    from senseai_ingest.adapters.replay.dsec import DsecReplay
+
+    seq = tmp_path / "seq"
+    shutil.copytree(dsec_dir, seq)
+    shutil.copytree(
+        bag, seq / "lidar_imu" / "imu.bag" if bag.is_file() else seq / "lidar_imu" / "rec"
+    )
+    ads = {a.source_id: a for a in DsecReplay.from_sequence(seq)}
+    assert "imu" in ads and ads["imu"].spec().modality is Modality.IMU
+    assert "imu" not in {a.source_id for a in DsecReplay.from_sequence(seq, imu=False)}
+    assert [a.source_id for a in DsecReplay.from_sequence(seq, sources=["imu"])] == ["imu"]

@@ -195,6 +195,7 @@ class Stream:
         adapter: Adapter,
         *,
         estimate_offsets: bool | None = None,
+        latency_ns: int | None = None,
         throttle: ThrottleConfig | None = None,
         max_samples: int = 65_536,
         max_bytes: int = 512 * 1024 * 1024,
@@ -215,7 +216,7 @@ class Stream:
             mode = ClockMode.ESTIMATED
         elif estimate_offsets is False:
             mode = ClockMode.FIXED
-        self.clock: ClockSync = ClockSync(spec, mode=mode)
+        self.clock: ClockSync = ClockSync(spec, mode=mode, latency_ns=latency_ns)
         self.throttle: Throttle | None = (
             Throttle(throttle, spec, metrics=self.metrics) if throttle is not None else None
         )

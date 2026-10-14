@@ -90,6 +90,20 @@ def format_stats(stats: dict[str, Any], wall_s: float) -> str:
     return "\n".join(lines)
 
 
+def parse_latency(spec: str | None) -> dict[str, int]:
+    """Parse ``"dvs0=4.0,rgb0=12.5"`` (milliseconds per source) into ns per source."""
+    out: dict[str, int] = {}
+    for item in (spec or "").split(","):
+        if not item.strip():
+            continue
+        sid, _, ms = item.partition("=")
+        try:
+            out[sid.strip()] = round(float(ms) * 1e6)
+        except ValueError:
+            raise SystemExit(f"--latency-ms: expected <source>=<ms>, got {item!r}") from None
+    return out
+
+
 def _replay(args: argparse.Namespace) -> int:
     sources = args.sources.split(",") if args.sources else None
     adapters = build_adapters(
@@ -121,6 +135,7 @@ def _replay(args: argparse.Namespace) -> int:
         max_ticks=args.max_ticks,
         late_policy=LatePolicy(args.late_policy),
         estimate_offsets=True if args.estimate_offsets else None,
+        latency_ns=parse_latency(args.latency_ms),
     )
     aligner = Aligner(adapters, cfg)
     writer = None
@@ -204,6 +219,10 @@ def _parser() -> argparse.ArgumentParser:
         "--estimate-offsets",
         action="store_true",
         help="exercise the clock estimator on recorded timestamps",
+    )
+    r.add_argument(
+        "--latency-ms",
+        help="known transport delay per source, e.g. 'rgb0=4.0,dvs0=0.3' (estimated sources only)",
     )
     r.add_argument("--out", help="write ticks to this HDF5 file")
     r.add_argument("--stats", action="store_true", help="print jitter / rate / drop table")

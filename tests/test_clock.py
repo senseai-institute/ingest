@@ -87,3 +87,20 @@ def test_clock_sync_estimated_reports_residual() -> None:
     assert errs[-1] == 10
     spec = cs.update_spec(SourceSpec("a", Modality.IMU))
     assert spec.clock_mode is ClockMode.ESTIMATED and spec.offset_ns == 1010
+
+
+def test_known_latency_is_removed_from_offset() -> None:
+    # device clock 0 offset; every sample arrives exactly 4 ms late
+    spec = SourceSpec("rgb0", Modality.FRAME, clock_mode=ClockMode.ESTIMATED)
+    naive = ClockSync(spec, k=5)
+    corrected = ClockSync(spec, k=5, latency_ns=4_000_000)
+    for i in range(10):
+        t = i * 1_000_000
+        out_n, _ = naive.align(imu("rgb0", t + 4_000_000, t_src=t))
+        out_c, err = corrected.align(imu("rgb0", t + 4_000_000, t_src=t))
+    assert out_n.t_master_ns == t + 4_000_000  # latency absorbed into the offset
+    assert out_c.t_master_ns == t and err == 0  # latency removed
+    assert corrected.update_spec(spec).meta["latency_ns"] == 4_000_000
+    assert ClockSync(SourceSpec("a", Modality.IMU, meta={"latency_ns": 7})).latency_ns == 7
+    with pytest.raises(ValueError, match="latency"):
+        ClockSync(spec, latency_ns=-1)

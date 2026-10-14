@@ -70,6 +70,7 @@ class AlignerConfig:
         speed: replay pacing (1.0 real time, 0 as fast as possible); ``None`` = from adapters.
         split_events: split EVENT batches at tick boundaries.
         estimate_offsets: force clock estimation on (``True``) / off (``False``) for all sources.
+        latency_ns: per-source known transport delay (overrides ``SourceSpec.meta["latency_ns"]``).
         throttle: per-source throttle settings.
         buffer_max_samples / buffer_max_bytes: per-source ring-buffer bounds.
     """
@@ -84,6 +85,7 @@ class AlignerConfig:
     speed: float | None = None
     split_events: bool = True
     estimate_offsets: bool | None = None
+    latency_ns: Mapping[str, int] = field(default_factory=dict)
     throttle: Mapping[str, ThrottleConfig] = field(default_factory=dict)
     buffer_max_samples: int = 65_536
     buffer_max_bytes: int = 512 * 1024 * 1024
@@ -118,6 +120,7 @@ class Aligner:
                     Stream(
                         src,
                         estimate_offsets=cfg.estimate_offsets,
+                        latency_ns=cfg.latency_ns.get(src.source_id),
                         throttle=cfg.throttle.get(src.source_id),
                         max_samples=cfg.buffer_max_samples,
                         max_bytes=cfg.buffer_max_bytes,
@@ -127,9 +130,10 @@ class Aligner:
         ids = [s.source_id for s in streams]
         if len(set(ids)) != len(ids):
             raise ValueError(f"duplicate source ids: {sorted(ids)}")
-        unknown = set(cfg.throttle) - set(ids)
-        if unknown:
-            raise ValueError(f"throttle config for unknown sources: {sorted(unknown)}")
+        for name, cfg_map in (("throttle", cfg.throttle), ("latency_ns", cfg.latency_ns)):
+            unknown = set(cfg_map) - set(ids)
+            if unknown:
+                raise ValueError(f"{name} config for unknown sources: {sorted(unknown)}")
         # Deterministic processing order.
         self.streams: list[Stream] = sorted(streams, key=lambda s: s.source_id)
         self.source_ids: list[str] = [s.source_id for s in self.streams]

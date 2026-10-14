@@ -1,0 +1,54 @@
+# Copyright 2026 SenseAI Institute
+# SPDX-License-Identifier: Apache-2.0
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: make test
+      - run: make lint
+      - run: make type
+      - name: proto is up to date
+        run: make proto && git diff --exit-code -- src/senseai_ingest/schema
+
+  build:
+    name: build & fresh-venv install
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - run: uv build
+      - run: uv venv /tmp/fresh && uv pip install -p /tmp/fresh/bin/python "$(ls dist/*.whl)[images]"
+      - run: /tmp/fresh/bin/python examples/replay_dsec.py
+
+  bench:
+    name: aligner benchmark
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev
+      - run: uv run python benchmarks/bench_aligner.py --duration-s 5

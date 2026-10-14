@@ -6,9 +6,14 @@ Model::
 
     t_master = t_source + offset_ns + drift_ppm * 1e-6 * (t_source - offset_ref_ns)
 
-``offset_ns`` is the median of ``t_arrival - t_source`` over the first ``k`` samples; every
-``drift_window_ns`` of source time the offset is re-estimated and ``drift_ppm`` is fitted from
-consecutive estimates.
+``offset_ns`` is the median of ``t_arrival - latency_ns - t_source`` over the first ``k``
+samples; every ``drift_window_ns`` of source time the offset is re-estimated and ``drift_ppm``
+is fitted from consecutive estimates.
+
+``latency_ns`` is a *known, constant* transport delay for the device (measured once on the real
+rig, e.g. with a shared trigger or an LED flash seen by two cameras). Arrival times alone cannot
+distinguish such a delay from a clock offset, so without it the estimated offset absorbs the
+delay and every ``t_master_ns`` of that source is late by that amount.
 """
 
 from __future__ import annotations
@@ -165,7 +170,9 @@ class ClockSync:
     * ``ESTIMATED``: the adapter set ``t_master_ns`` to the host *arrival* time. That arrival is
       fed to the :class:`OffsetEstimator` and ``t_master_ns`` is replaced by the model
       prediction. EVENT ``t`` columns (given in source time) are shifted onto the master clock.
-      The returned alignment error is ``|prediction - arrival|``.
+      The returned alignment error is ``|prediction - (arrival - latency)|``.
+
+    ``latency_ns`` defaults to ``spec.meta["latency_ns"]`` (0 if absent).
     """
 
     def __init__(
@@ -175,15 +182,20 @@ class ClockSync:
         mode: ClockMode | None = None,
         k: int = 200,
         drift_window_ns: int = 10_000_000_000,
+        latency_ns: int | None = None,
     ) -> None:
         self.mode = mode if mode is not None else spec.clock_mode
         self.estimator = OffsetEstimator(k=k, drift_window_ns=drift_window_ns)
+        lat = latency_ns if latency_ns is not None else spec.meta.get("latency_ns", 0)
+        self.latency_ns = int(lat)
+        if self.latency_ns < 0:
+            raise ValueError(f"{spec.source_id}: latency_ns must be >= 0")
 
     def align(self, sample: Sample) -> tuple[Sample, int]:
         """Return ``(aligned_sample, alignment_error_ns)``."""
         if self.mode is ClockMode.FIXED:
             return sample, 0
-        arrival = sample.t_master_ns
+        arrival = sample.t_master_ns - self.latency_ns
         self.estimator.observe(sample.t_source_ns, arrival)
         t_master = self.estimator.to_master(sample.t_source_ns)
         delta = t_master - sample.t_source_ns
@@ -199,6 +211,7 @@ class ClockSync:
         st = self.estimator.state()
         return replace(
             spec,
+            meta={**spec.meta, "latency_ns": self.latency_ns},
             clock_mode=ClockMode.ESTIMATED,
             offset_ns=st.offset_ns,
             offset_ref_ns=st.offset_ref_ns,
