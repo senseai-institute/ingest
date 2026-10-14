@@ -80,8 +80,8 @@ def _image(msg: Any) -> tuple[np.ndarray[Any, Any], str]:
         return buf.reshape(h, step)[:, :w, None].copy(), "mono8"
     if enc in ("mono16", "16uc1"):
         dt = np.dtype(">u2" if msg.is_bigendian else "<u2")
-        arr = buf.reshape(h, step).view(dt)[:, :w].astype(np.uint16)
-        return arr[..., None], "mono16"
+        a16 = buf.reshape(h, step).view(dt)[:, :w].astype(np.uint16)
+        return a16[..., None], "mono16"
     if enc in ("rgb8", "bgr8"):
         arr = buf.reshape(h, step)[:, : w * 3].reshape(h, w, 3)
         return (arr[..., ::-1] if enc == "bgr8" else arr).copy(), "rgb8"
