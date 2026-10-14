@@ -4,8 +4,7 @@
   <name>senseai_ingest_msgs</name>
   <version>0.1.0</version>
   <description>ROS 2 messages mirroring the senseai-ingest wire format (senseai.ingest.v1).</description>
-  <!-- TODO: replace with the real maintainer address before releasing to a ROS index. -->
-  <maintainer email="maintainer@example.com">SenseAI Institute</maintainer>
+  <maintainer email="kedar@senseaiinstitute.com">SenseAI Institute</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
