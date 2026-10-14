@@ -19,6 +19,7 @@ from senseai_ingest.stream import AlignedTick, ClockMode, Modality, Sample, Sour
 __all__ = [
     "from_proto",
     "hash_ticks",
+    "modality_to_proto",
     "pb",
     "tensor_from_proto",
     "tensor_to_proto",
@@ -47,6 +48,11 @@ _DTYPE_TO_PB: dict[np.dtype[Any], int] = {
     np.dtype("<f8"): pb.DTYPE_FLOAT64,
 }
 _DTYPE_FROM_PB = {v: k for k, v in _DTYPE_TO_PB.items()}
+
+
+def modality_to_proto(m: Modality) -> int:
+    """Return the ``senseai.ingest.v1.Modality`` enum number of ``m``."""
+    return int(_MODALITY_TO_PB[m])
 
 
 def tensor_to_proto(arr: np.ndarray[Any, Any]) -> pb.Tensor:
