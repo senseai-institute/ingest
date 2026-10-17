@@ -211,7 +211,13 @@ def test_dsec_start_end_window(dsec_dir: Path) -> None:
 
 def test_m3ed_and_mvsec_layouts(m3ed_file: Path, mvsec_file: Path) -> None:
     m3 = {a.source_id: a for a in M3edReplay.from_sequence(m3ed_file)}
-    assert set(m3) == {"events_left", "rgb", "imu"}
+    assert set(m3) == {"events_left", "rgb", "mono_right", "imu", "imu_ouster"}
+    assert m3["mono_right"].spec().meta["encoding"] == "mono8"
+    with m3["mono_right"] as mr:
+        assert next(iter(mr.read())).array.shape == (12, 16, 1)
+    assert [a.source_id for a in M3edReplay.from_sequence(m3ed_file, sources=["imu"])] == ["imu"]
+    with pytest.raises(ValueError, match="ouster"):
+        M3edReplay.from_sequence(m3ed_file, sources=["lidar"])
     with m3["imu"] as imu:
         s = next(iter(imu.read()))
     assert s.array.shape == (6,) and s.modality is Modality.IMU
@@ -274,3 +280,18 @@ def test_ragged_lidar_layout(tmp_path: Path) -> None:
                                    "data": ["/a", "/b"], "ptr": "/p"}]})  # fmt: skip
     with pytest.raises(LayoutError, match="not found"):
         open_layout(_write(tmp_path / "noptr", ts=np.zeros(1), pts=pts), lay)
+
+
+def test_sentinel_timestamps_are_skipped(tmp_path: Path) -> None:
+    t = np.array([0, 1000, np.iinfo(np.int64).min, 3000], np.int64)
+    path = _write(tmp_path, t=t, d=np.arange(4.0)[:, None])
+    (ad,) = open_layout(path, _layout())
+    with ad:
+        out = list(ad.read())
+    assert [s.t_master_ns for s in out] == [0, 1_000_000, 3_000_000]
+    assert [float(s.array[0]) for s in out] == [0.0, 1.0, 3.0] and ad.invalid_rows == 1
+    (tmp_path / "f").mkdir()
+    tf = _write(tmp_path / "f", t=np.array([0.0, np.nan, 2.0]), d=np.zeros((3, 1)))
+    (ad2,) = open_layout(tf, _layout(time={"unit": "s"}))
+    with ad2:
+        assert [s.t_master_ns for s in ad2.read()] == [0, 2_000_000_000]

@@ -173,7 +173,7 @@ These shapes are a contract. Adapters must produce them, and `senseai-tokens` ma
 | `CURRENT` | ndarray | (J,) | float32 | A per joint | `joints` (names) |
 | `THERMAL` | ndarray | (H, W) | float32 | K, or raw counts | `unit` (`K` \| `raw`) |
 | `GAS`     | dict | `{name: ()}` | float64 | one 0-d array per channel | `units` (dict name→unit) |
-| `LIDAR`   | ndarray | (N, 4) | float32 | `x, y, z` m, intensity | `frame_id` |
+| `LIDAR`   | ndarray | (N, 4) | float32 | `x, y, z` m, intensity (Ouster: reflectivity) | `frame_id` |
 | `OTHER`   | either | free | free | free | — |
 
 "Required meta" means it lives in the `SourceSpec.meta` and/or the per-sample `meta`. Optional
@@ -340,16 +340,31 @@ back with `TickReader`.
 
 | Dataset | Entry point | Sources | Notes |
 |---|---|---|---|
-| DSEC | `DsecReplay.from_sequence(seq_dir)` | `events_left/right`, `rgb_left/right`, `imu` | Events: `events/<cam>/events.h5`, `t` µs relative to `/t_offset`. Frames: `images/<cam>/rectified/*.png` plus `images/timestamps.txt` (needs `[images]`). IMU: DSEC ships it as ROS bags (`lidar_imu.zip`); any `*.bag` under the sequence directory is scanned for an IMU topic (needs `[ros2]`). |
-| M3ED | `M3edReplay.from_sequence(file_or_dir)` | `events_left/right`, `rgb`, `mono_left`, `imu` | `layouts/m3ed.yaml`, µs. Ouster LiDAR is raw packets in M3ED and isn't decoded in Gate 1. |
+| DSEC | `DsecReplay.from_sequence(seq_dir)` | `events_left/right`, `rgb_left/right`, `imu`, `lidar` | Events: `events/<cam>/events.h5`, `t` µs relative to `/t_offset`. Frames: `images/<cam>/rectified/*.png` plus `images/timestamps.txt` (needs `[images]`). IMU and LiDAR: DSEC ships them as ROS bags (`lidar_imu.zip`); any `*.bag` under the sequence directory is scanned for an IMU and a PointCloud2 topic (needs `[ros2]`). |
+| M3ED | `M3edReplay.from_sequence(file_or_dir)` | `events_left/right`, `rgb`, `mono_left/right`, `imu`, `imu_ouster`, `lidar` | `layouts/m3ed.yaml`, µs. **Verified on a real recording** (`car_urban_night_penno_small_loop_darker`). `lidar` is decoded from the raw Ouster packets by `adapters/replay/ouster.py` (pure numpy, no vendor SDK): ~66 k points per scan at 10 Hz, 60 ms per scan. Invalid IMU rows (int64-min timestamps) are skipped. |
 | MVSEC | `MvsecReplay.from_sequence(file_or_dir)` | `events_left/right`, `frames_left`, `imu_left` | `layouts/mvsec.yaml`: packed (N,4) float64 events, ROS-time seconds, ±1 polarity. |
-| rosbag | `RosbagReplay.from_bag(bag)` | one per topic | rosbag1 or rosbag2 via `rosbags`. Supports `sensor_msgs/Imu`, `sensor_msgs/Image` and `dvs_msgs/EventArray` (MVSEC bags). |
+| rosbag | `RosbagReplay.from_bag(bag)` | one per topic | rosbag1 or rosbag2 via `rosbags`. Supports `sensor_msgs/Imu`, `sensor_msgs/Image`, `sensor_msgs/PointCloud2` (→ LIDAR) and `dvs_msgs/EventArray` (MVSEC bags). |
 | WAV | `WavReplay(path, block=1024)` | `mic0` | 8/16-bit PCM → int16; 32-bit and float → float32. |
 | any HDF5 | `open_layout(path, "my.yaml")` | per layout | See the layout format in `adapters/replay/hdf5.py`. |
 
-> The M3ED and MVSEC layouts follow the published file layouts but haven't been checked against
-> real downloads in CI, which only uses synthetic fixtures. Run `senseai-ingest inspect --path …`
-> on your copy first. Fixing a path is a one-line YAML change.
+> The MVSEC layout follows the published file layout but hasn't been checked against a real
+> download (CI uses synthetic fixtures only). Run `senseai-ingest inspect --path …` on your copy
+> first; fixing a path is a one-line YAML change. M3ED has been verified on a real file.
+
+Ragged per-sample arrays (LiDAR scans of varying size) use a `ptr` dataset of row offsets:
+
+```yaml
+  - id: lidar
+    modality: lidar
+    t: /lidar/ts
+    data: /lidar/points      # (total points, 4), all scans concatenated
+    ptr: /lidar/ptr          # (n_scans + 1,): scan i = points[ptr[i]:ptr[i+1]]
+```
+
+Real-data throughput (M3ED, 6 sources incl. 1280×800 RGB + mono at 25 Hz and 64-beam LiDAR):
+109 ticks/s without `--out`, 48 ticks/s with it. The cost is the dataset's own LZF
+decompression and, with `--out`, writing uncompressed frames; the aligner itself is not the
+bottleneck.
 
 A layout maps HDF5 datasets to sources:
 
@@ -485,7 +500,6 @@ That's the clock-model limitation described above, not an aligner error.
 - Hardware time sync (PTP, trigger lines), and latency calibration. Hardware-synced sources
   are declared `ClockMode.FIXED`.
 - Live device capture: Gate 1 has stubs with final interfaces.
-- LiDAR packet decoding (e.g. M3ED Ouster)
 - Prometheus or OpenTelemetry export (the counter dict is the extension point)
 
 ## License

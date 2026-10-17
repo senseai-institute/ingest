@@ -39,6 +39,9 @@ Layout format::
 
 ``t_source_ns = raw * unit`` and ``t_master_ns = (raw + offset) * unit``; the clock mode is
 ``FIXED`` and ``SourceSpec.offset_ns`` records the dataset offset.
+
+Rows whose raw timestamp is the int64 minimum (``-2**63``, the sentinel M3ED uses for invalid
+IMU rows) or is NaN are skipped and counted in ``<source_id>.invalid_rows``.
 """
 
 from __future__ import annotations
@@ -74,6 +77,14 @@ __all__ = [
 log = structlog.get_logger(__name__)
 
 _UNIT_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000}
+_INT64_MIN = np.iinfo(np.int64).min
+
+
+def _valid_rows(raw_t: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
+    """Boolean mask of rows with a usable timestamp (not the int64-min sentinel, not NaN)."""
+    if np.issubdtype(raw_t.dtype, np.integer):
+        return np.asarray(raw_t != _INT64_MIN)
+    return np.asarray(np.isfinite(raw_t))
 
 
 class LayoutError(ValueError):
@@ -266,6 +277,8 @@ class Hdf5Replay(ReplayAdapter):
         self._unit = _UNIT_NS[source.unit]
         self._offset_raw: int | float | None = None
         self._spec: SourceSpec | None = None
+        #: rows skipped because their timestamp was the int64-min sentinel / NaN
+        self.invalid_rows = 0
 
     # -- helpers ----------------------------------------------------------------------------
     def _file(self) -> h5py.File:
@@ -301,7 +314,8 @@ class Hdf5Replay(ReplayAdapter):
         off = self._offset() if master else 0
         if np.issubdtype(raw.dtype, np.integer) and isinstance(off, int):
             return (raw.astype(np.int64) + np.int64(off)) * np.int64(self._unit)
-        return np.round((raw.astype(np.float64) + off) * self._unit).astype(np.int64)
+        with np.errstate(invalid="ignore"):  # NaN sentinels are masked out by the callers
+            return np.round((raw.astype(np.float64) + off) * self._unit).astype(np.int64)
 
     def _t_at(self, i: int) -> int:
         raw = np.asarray(self._tref().at(self._file(), i)).reshape(1)
@@ -440,10 +454,13 @@ class Hdf5Replay(ReplayAdapter):
             raw_t = lay.t.read(f, slice(a, b))
             t_master = self.to_ns(raw_t)
             t_source = self.to_ns(raw_t, master=False)
+            ok = _valid_rows(raw_t)
+            if not ok.all():
+                self.invalid_rows += int((~ok).sum())
             ptr = np.asarray(lay.ptr.read(f, slice(a, b + 1))).astype(np.int64)
             block = lay.data[0].read(f, slice(int(ptr[0]), int(ptr[-1])))
-            for i in range(b - a):
-                rows = block[ptr[i] - ptr[0] : ptr[i + 1] - ptr[0]]
+            for i in np.flatnonzero(ok).tolist():
+                rows = block[int(ptr[i] - ptr[0]) : int(ptr[i + 1] - ptr[0])]
                 yield Sample(lay.id, lay.modality, int(t_source[i]), int(t_master[i]), rows, meta)
 
     def _read_tensors(self) -> Iterator[Sample]:
@@ -460,13 +477,16 @@ class Hdf5Replay(ReplayAdapter):
         for a in range(lo, hi, step):
             sl = slice(a, min(hi, a + step))
             raw_t = lay.t.read(f, sl)
+            ok = _valid_rows(raw_t)
+            if not ok.all():
+                self.invalid_rows += int((~ok).sum())
             t_master = self.to_ns(raw_t)
             t_source = self.to_ns(raw_t, master=False)
             parts = [r.read(f, sl) for r in lay.data]
             block = parts[0] if len(parts) == 1 else np.concatenate(parts, axis=-1)
             if lay.modality is Modality.FRAME and block.ndim == 3:
                 block = block[..., None]  # (N, H, W) -> (N, H, W, 1)
-            for i in range(len(t_master)):
+            for i in np.flatnonzero(ok):
                 yield Sample(
                     lay.id, lay.modality, int(t_source[i]), int(t_master[i]), block[i], meta
                 )
