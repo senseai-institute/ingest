@@ -361,10 +361,11 @@ Ragged per-sample arrays (LiDAR scans of varying size) use a `ptr` dataset of ro
     ptr: /lidar/ptr          # (n_scans + 1,): scan i = points[ptr[i]:ptr[i+1]]
 ```
 
-Real-data throughput (M3ED, 6 sources incl. 1280×800 RGB + mono at 25 Hz and 64-beam LiDAR):
-109 ticks/s without `--out`, 48 ticks/s with it. The cost is the dataset's own LZF
-decompression and, with `--out`, writing uncompressed frames; the aligner itself is not the
-bottleneck.
+Real-data throughput (M3ED `car_urban_night_penno_small_loop_darker`, 50 s, 8 sources: 2 event
+cameras at up to 6 M ev/s each, 1280×800 RGB + 2 mono at 25 Hz, 2 IMUs, 64-beam LiDAR):
+67 ticks/s over the full recording with zero drops (109 ticks/s over the quieter first 5 s;
+48 ticks/s with `--out`). The cost is the dataset's own LZF decompression and, with `--out`,
+writing uncompressed frames; the aligner itself is not the bottleneck.
 
 A layout maps HDF5 datasets to sources:
 
