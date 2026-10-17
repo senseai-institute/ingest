@@ -1,7 +1,8 @@
 # M3ED (Chaney et al., CVPRW 2023) — one <sequence>_data.h5 per sequence, timestamps in µs.
-# Paths follow the published M3ED HDF5 layout; verify against your download with
-# `senseai-ingest inspect --path <file>` (all non-event sources are optional).
-# Ouster LiDAR is stored as raw packets in M3ED and is not decoded here (out of scope for Gate 1).
+# Verified against car_urban_night_penno_small_loop_darker_data.h5 (2026-10): all paths below
+# exist; event polarity is stored 0/1; invalid IMU rows carry an int64-min timestamp (skipped).
+# Ouster LiDAR is stored as raw packets (/ouster/data + /ouster/metadata); M3edReplay decodes it
+# with senseai_ingest.adapters.replay.ouster (not expressible as a layout entry).
 name: m3ed
 description: M3ED <sequence>_data.h5 (Prophesee events, OVC frames + IMU)
 detect: []
@@ -35,6 +36,14 @@ sources:
     time: {unit: us}
     meta: {encoding: mono8}
     optional: true
+  - id: mono_right
+    modality: frame
+    file: "*_data.h5"
+    t: /ovc/ts
+    data: /ovc/right/data
+    time: {unit: us}
+    meta: {encoding: mono8}
+    optional: true
   - id: imu
     modality: imu
     file: "*_data.h5"
@@ -42,4 +51,12 @@ sources:
     data: [/ovc/imu/accel, /ovc/imu/omega]
     time: {unit: us}
     meta: {frame_id: ovc_imu}
+    optional: true
+  - id: imu_ouster
+    modality: imu
+    file: "*_data.h5"
+    t: /ouster/imu/ts
+    data: [/ouster/imu/accel, /ouster/imu/omega]
+    time: {unit: us}
+    meta: {frame_id: os_imu}
     optional: true

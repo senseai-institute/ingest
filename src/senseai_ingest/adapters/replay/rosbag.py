@@ -7,6 +7,7 @@ No ROS installation is needed. Supported message types:
 ==============================  ==========  =====================================================
 ``sensor_msgs/msg/Imu``         IMU         ``[linear_acceleration, angular_velocity]``
 ``sensor_msgs/msg/Image``       FRAME       ``mono8``, ``mono16``, ``rgb8``, ``bgr8`` (→ rgb8)
+``sensor_msgs/msg/PointCloud2`` LIDAR       ``x, y, z`` + ``intensity`` (0 if absent) → (N, 4) f32
 ``dvs_msgs/msg/EventArray``     EVENT       rpg_dvs_ros (MVSEC); per-event ``ts`` → ``t`` column
 ==============================  ==========  =====================================================
 
@@ -37,8 +38,12 @@ DVS_MSGS = {
 SUPPORTED: Mapping[str, Modality] = {
     "sensor_msgs/msg/Imu": Modality.IMU,
     "sensor_msgs/msg/Image": Modality.FRAME,
+    "sensor_msgs/msg/PointCloud2": Modality.LIDAR,
     "dvs_msgs/msg/EventArray": Modality.EVENT,
 }
+
+# sensor_msgs/PointField datatype codes -> numpy
+_PF_DTYPES = {1: "i1", 2: "u1", 3: "i2", 4: "u2", 5: "i4", 6: "u4", 7: "f4", 8: "f8"}
 
 _HINT = "rosbag replay needs the rosbags package: pip install senseai-ingest[ros2]"
 
@@ -86,6 +91,30 @@ def _image(msg: Any) -> tuple[np.ndarray[Any, Any], str]:
         arr = buf.reshape(h, step)[:, : w * 3].reshape(h, w, 3)
         return (arr[..., ::-1] if enc == "bgr8" else arr).copy(), "rgb8"
     raise ValueError(f"unsupported image encoding {msg.encoding!r}")
+
+
+def _pointcloud(msg: Any) -> np.ndarray[Any, Any]:
+    """Decode a PointCloud2 into ``(N, 4) float32`` ``x, y, z, intensity`` (NaN rows dropped)."""
+    endian = ">" if msg.is_bigendian else "<"
+    fields = {str(f.name): f for f in msg.fields}
+    missing = [k for k in ("x", "y", "z") if k not in fields]
+    if missing:
+        raise ValueError(f"PointCloud2 without {missing} fields")
+    n = int(msg.width) * int(msg.height)
+    step = int(msg.point_step)
+    flat = np.frombuffer(np.asarray(msg.data, dtype=np.uint8).tobytes(), dtype=np.uint8)
+    buf = flat[: n * step].reshape(n, step)
+
+    def col(name: str) -> np.ndarray[Any, Any]:
+        f = fields[name]
+        dt = np.dtype(endian + _PF_DTYPES[int(f.datatype)])
+        off = int(f.offset)
+        return buf[:, off : off + dt.itemsize].copy().view(dt).reshape(n).astype(np.float32)
+
+    xyz = np.stack([col("x"), col("y"), col("z")], axis=1)
+    inten = col("intensity") if "intensity" in fields else np.zeros(n, np.float32)
+    pts = np.concatenate([xyz, inten[:, None]], axis=1)
+    return pts[np.all(np.isfinite(pts), axis=1)]
 
 
 class RosbagReplay(ReplayAdapter):
@@ -173,6 +202,9 @@ class RosbagReplay(ReplayAdapter):
             a, g = msg.linear_acceleration, msg.angular_velocity
             data = np.array([a.x, a.y, a.z, g.x, g.y, g.z], dtype=np.float64)
             return Sample(self._sid, mod, t, t, data, {"frame_id": msg.header.frame_id})
+        if mod is Modality.LIDAR:
+            pts = _pointcloud(msg)
+            return Sample(self._sid, mod, t, t, pts, {"frame_id": msg.header.frame_id})
         arr, enc = _image(msg)
         return Sample(self._sid, mod, t, t, arr, {"encoding": enc})
 

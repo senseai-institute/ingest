@@ -97,6 +97,13 @@ def make_m3ed_fixture(root: str | Path, *, duration_s: float = 0.5, seed: int = 
         f.create_dataset("ovc/imu/ts", data=t0 + np.arange(n_imu, dtype=np.int64) * 2_500)
         f.create_dataset("ovc/imu/accel", data=rng.normal(0, 1, (n_imu, 3)))
         f.create_dataset("ovc/imu/omega", data=rng.normal(0, 0.1, (n_imu, 3)))
+        f.create_dataset(
+            "ovc/right/data", data=rng.integers(0, 255, (n_img, 12, 16, 1), dtype=np.uint8)
+        )
+        n_oi = int(duration_s * 100)
+        f.create_dataset("ouster/imu/ts", data=t0 + np.arange(n_oi, dtype=np.int64) * 10_000)
+        f.create_dataset("ouster/imu/accel", data=rng.normal(0, 1, (n_oi, 3)))
+        f.create_dataset("ouster/imu/omega", data=rng.normal(0, 0.1, (n_oi, 3)))
     return path
 
 

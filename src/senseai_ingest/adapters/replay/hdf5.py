@@ -29,9 +29,19 @@ Layout format::
         time: {unit: us}
         rate_hz: 1000                      # optional; estimated from timestamps otherwise
         optional: true                     # skip silently if the file/dataset is missing
+      - id: lidar
+        modality: lidar
+        file: data.h5
+        t: /lidar/ts                       # one timestamp per scan
+        data: /lidar/points                # (sum of points, 4): all scans concatenated ...
+        ptr: /lidar/ptr                    # ... (n_scans + 1,) offsets: scan i = ptr[i]:ptr[i+1]
+        time: {unit: us}
 
 ``t_source_ns = raw * unit`` and ``t_master_ns = (raw + offset) * unit``; the clock mode is
 ``FIXED`` and ``SourceSpec.offset_ns`` records the dataset offset.
+
+Rows whose raw timestamp is the int64 minimum (``-2**63``, the sentinel M3ED uses for invalid
+IMU rows) or is NaN are skipped and counted in ``<source_id>.invalid_rows``.
 """
 
 from __future__ import annotations
@@ -67,6 +77,14 @@ __all__ = [
 log = structlog.get_logger(__name__)
 
 _UNIT_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000}
+_INT64_MIN = np.iinfo(np.int64).min
+
+
+def _valid_rows(raw_t: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
+    """Boolean mask of rows with a usable timestamp (not the int64-min sentinel, not NaN)."""
+    if np.issubdtype(raw_t.dtype, np.integer):
+        return np.asarray(raw_t != _INT64_MIN)
+    return np.asarray(np.isfinite(raw_t))
 
 
 class LayoutError(ValueError):
@@ -116,6 +134,7 @@ class SourceLayout:
     file: str | None = None
     t: FieldRef | None = None
     data: tuple[FieldRef, ...] = ()
+    ptr: FieldRef | None = None
     events: Mapping[str, FieldRef] = field(default_factory=dict)
     polarity: str = "identity"
     batch_ns: int = 1_000_000
@@ -143,6 +162,7 @@ class SourceLayout:
             raise LayoutError(f"{where}: polarity must be 'identity' or 'sign'")
         events: dict[str, FieldRef] = {}
         t: FieldRef | None = None
+        ptr: FieldRef | None = None
         data: tuple[FieldRef, ...] = ()
         if modality is Modality.EVENT:
             ev = d.get("events")
@@ -155,12 +175,17 @@ class SourceLayout:
             t = FieldRef.parse(d["t"], f"{where}.t")
             raw = d["data"] if isinstance(d["data"], list) else [d["data"]]
             data = tuple(FieldRef.parse(x, f"{where}.data") for x in raw)
+            if "ptr" in d:
+                if len(data) != 1:
+                    raise LayoutError(f"{where}: 'ptr' (ragged) sources take exactly one 'data'")
+                ptr = FieldRef.parse(d["ptr"], f"{where}.ptr")
         return cls(
             id=str(d["id"]),
             modality=modality,
             file=d.get("file"),
             t=t,
             data=data,
+            ptr=ptr,
             events=events,
             polarity=polarity,
             batch_ns=int(d.get("batch_ns", 1_000_000)),
@@ -252,6 +277,8 @@ class Hdf5Replay(ReplayAdapter):
         self._unit = _UNIT_NS[source.unit]
         self._offset_raw: int | float | None = None
         self._spec: SourceSpec | None = None
+        #: rows skipped because their timestamp was the int64-min sentinel / NaN
+        self.invalid_rows = 0
 
     # -- helpers ----------------------------------------------------------------------------
     def _file(self) -> h5py.File:
@@ -287,7 +314,8 @@ class Hdf5Replay(ReplayAdapter):
         off = self._offset() if master else 0
         if np.issubdtype(raw.dtype, np.integer) and isinstance(off, int):
             return (raw.astype(np.int64) + np.int64(off)) * np.int64(self._unit)
-        return np.round((raw.astype(np.float64) + off) * self._unit).astype(np.int64)
+        with np.errstate(invalid="ignore"):  # NaN sentinels are masked out by the callers
+            return np.round((raw.astype(np.float64) + off) * self._unit).astype(np.int64)
 
     def _t_at(self, i: int) -> int:
         raw = np.asarray(self._tref().at(self._file(), i)).reshape(1)
@@ -341,8 +369,9 @@ class Hdf5Replay(ReplayAdapter):
         """Open the HDF5 file and validate that the layout's datasets exist."""
         f = self._file()
         refs = list(self.layout.events.values()) + list(self.layout.data)
-        if self.layout.t is not None:
-            refs.append(self.layout.t)
+        for extra in (self.layout.t, self.layout.ptr):
+            if extra is not None:
+                refs.append(extra)
         missing = [r.path for r in refs if r.path not in f]
         if missing:
             raise LayoutError(f"{self.file}: datasets missing for {self.layout.id}: {missing}")
@@ -369,6 +398,8 @@ class Hdf5Replay(ReplayAdapter):
     def _read_once(self) -> Iterator[Sample]:
         if self.layout.modality is Modality.EVENT:
             yield from self._read_events()
+        elif self.layout.ptr is not None:
+            yield from self._read_ragged()
         else:
             yield from self._read_tensors()
 
@@ -409,6 +440,29 @@ class Hdf5Replay(ReplayAdapter):
         t_last = int(cols["t"][-1])
         return Sample(self.layout.id, Modality.EVENT, t_last - off_ns, t_last, cols, meta)
 
+    def _read_ragged(self) -> Iterator[Sample]:
+        lay = self.layout
+        f = self._file()
+        assert lay.t is not None and lay.ptr is not None
+        lo, hi = self._row_range()
+        n = self._n()
+        if lay.ptr.length(f) != n + 1:
+            raise LayoutError(f"{lay.id}: ptr must have n_samples + 1 = {n + 1} entries")
+        meta: dict[str, Any] = {}
+        for a in range(lo, hi, self.chunk_rows):
+            b = min(hi, a + self.chunk_rows)
+            raw_t = lay.t.read(f, slice(a, b))
+            t_master = self.to_ns(raw_t)
+            t_source = self.to_ns(raw_t, master=False)
+            ok = _valid_rows(raw_t)
+            if not ok.all():
+                self.invalid_rows += int((~ok).sum())
+            ptr = np.asarray(lay.ptr.read(f, slice(a, b + 1))).astype(np.int64)
+            block = lay.data[0].read(f, slice(int(ptr[0]), int(ptr[-1])))
+            for i in np.flatnonzero(ok).tolist():
+                rows = block[int(ptr[i] - ptr[0]) : int(ptr[i + 1] - ptr[0])]
+                yield Sample(lay.id, lay.modality, int(t_source[i]), int(t_master[i]), rows, meta)
+
     def _read_tensors(self) -> Iterator[Sample]:
         lay = self.layout
         f = self._file()
@@ -423,13 +477,16 @@ class Hdf5Replay(ReplayAdapter):
         for a in range(lo, hi, step):
             sl = slice(a, min(hi, a + step))
             raw_t = lay.t.read(f, sl)
+            ok = _valid_rows(raw_t)
+            if not ok.all():
+                self.invalid_rows += int((~ok).sum())
             t_master = self.to_ns(raw_t)
             t_source = self.to_ns(raw_t, master=False)
             parts = [r.read(f, sl) for r in lay.data]
             block = parts[0] if len(parts) == 1 else np.concatenate(parts, axis=-1)
             if lay.modality is Modality.FRAME and block.ndim == 3:
                 block = block[..., None]  # (N, H, W) -> (N, H, W, 1)
-            for i in range(len(t_master)):
+            for i in np.flatnonzero(ok):
                 yield Sample(
                     lay.id, lay.modality, int(t_source[i]), int(t_master[i]), block[i], meta
                 )
@@ -465,7 +522,8 @@ def open_layout(
         if ok:
             assert path is not None
             with h5py.File(path, "r") as f:
-                refs = [*src.events.values(), *src.data, *([src.t] if src.t else [])]
+                refs = [*src.events.values(), *src.data]
+                refs += [r for r in (src.t, src.ptr) if r is not None]
                 ok = all(r.path in f for r in refs)
         if not ok:
             if src.optional and wanted is None:
