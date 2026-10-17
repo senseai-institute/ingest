@@ -245,3 +245,32 @@ def test_describe_and_detect(
     assert detect_layout(m3ed_file) == "m3ed"
     assert detect_layout(mvsec_file) == "mvsec"
     assert detect_layout(tmp_path) is None
+
+
+def test_ragged_lidar_layout(tmp_path: Path) -> None:
+    pts = np.arange(7 * 4, dtype=np.float32).reshape(7, 4)
+    path = _write(
+        tmp_path, ts=np.array([0, 1000, 2000], np.int64), pts=pts,
+        ptr=np.array([0, 3, 3, 7], np.uint64),
+    )  # fmt: skip
+    lay = {"sources": [{"id": "lidar", "modality": "lidar", "t": "/ts", "data": "/pts",
+                        "ptr": "/ptr", "time": {"unit": "us"}}]}  # fmt: skip
+    (ad,) = open_layout(path, lay)
+    with ad:
+        out = list(ad.read())
+    assert [s.array.shape for s in out] == [(3, 4), (0, 4), (4, 4)]
+    assert out[2].array[0].tolist() == pts[3].tolist() and out[2].t_master_ns == 2_000_000
+    ad2 = Hdf5Replay(path, ad.layout, start_ns=1_000_000, chunk_rows=1)
+    with ad2:
+        assert [s.array.shape[0] for s in ad2.read()] == [0, 4]
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "noptr").mkdir()
+    bad = _write(tmp_path / "bad", ts=np.zeros(3, np.int64), pts=pts, ptr=np.zeros(2, np.uint64))
+    (ad3,) = open_layout(bad, lay)
+    with pytest.raises(LayoutError, match="ptr must have"), ad3:
+        list(ad3.read())
+    with pytest.raises(LayoutError, match="exactly one"):
+        Layout.parse({"sources": [{"id": "l", "modality": "lidar", "t": "/t",
+                                   "data": ["/a", "/b"], "ptr": "/p"}]})  # fmt: skip
+    with pytest.raises(LayoutError, match="not found"):
+        open_layout(_write(tmp_path / "noptr", ts=np.zeros(1), pts=pts), lay)

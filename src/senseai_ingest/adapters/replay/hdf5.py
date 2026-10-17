@@ -29,6 +29,13 @@ Layout format::
         time: {unit: us}
         rate_hz: 1000                      # optional; estimated from timestamps otherwise
         optional: true                     # skip silently if the file/dataset is missing
+      - id: lidar
+        modality: lidar
+        file: data.h5
+        t: /lidar/ts                       # one timestamp per scan
+        data: /lidar/points                # (sum of points, 4): all scans concatenated ...
+        ptr: /lidar/ptr                    # ... (n_scans + 1,) offsets: scan i = ptr[i]:ptr[i+1]
+        time: {unit: us}
 
 ``t_source_ns = raw * unit`` and ``t_master_ns = (raw + offset) * unit``; the clock mode is
 ``FIXED`` and ``SourceSpec.offset_ns`` records the dataset offset.
@@ -116,6 +123,7 @@ class SourceLayout:
     file: str | None = None
     t: FieldRef | None = None
     data: tuple[FieldRef, ...] = ()
+    ptr: FieldRef | None = None
     events: Mapping[str, FieldRef] = field(default_factory=dict)
     polarity: str = "identity"
     batch_ns: int = 1_000_000
@@ -143,6 +151,7 @@ class SourceLayout:
             raise LayoutError(f"{where}: polarity must be 'identity' or 'sign'")
         events: dict[str, FieldRef] = {}
         t: FieldRef | None = None
+        ptr: FieldRef | None = None
         data: tuple[FieldRef, ...] = ()
         if modality is Modality.EVENT:
             ev = d.get("events")
@@ -155,12 +164,17 @@ class SourceLayout:
             t = FieldRef.parse(d["t"], f"{where}.t")
             raw = d["data"] if isinstance(d["data"], list) else [d["data"]]
             data = tuple(FieldRef.parse(x, f"{where}.data") for x in raw)
+            if "ptr" in d:
+                if len(data) != 1:
+                    raise LayoutError(f"{where}: 'ptr' (ragged) sources take exactly one 'data'")
+                ptr = FieldRef.parse(d["ptr"], f"{where}.ptr")
         return cls(
             id=str(d["id"]),
             modality=modality,
             file=d.get("file"),
             t=t,
             data=data,
+            ptr=ptr,
             events=events,
             polarity=polarity,
             batch_ns=int(d.get("batch_ns", 1_000_000)),
@@ -341,8 +355,9 @@ class Hdf5Replay(ReplayAdapter):
         """Open the HDF5 file and validate that the layout's datasets exist."""
         f = self._file()
         refs = list(self.layout.events.values()) + list(self.layout.data)
-        if self.layout.t is not None:
-            refs.append(self.layout.t)
+        for extra in (self.layout.t, self.layout.ptr):
+            if extra is not None:
+                refs.append(extra)
         missing = [r.path for r in refs if r.path not in f]
         if missing:
             raise LayoutError(f"{self.file}: datasets missing for {self.layout.id}: {missing}")
@@ -369,6 +384,8 @@ class Hdf5Replay(ReplayAdapter):
     def _read_once(self) -> Iterator[Sample]:
         if self.layout.modality is Modality.EVENT:
             yield from self._read_events()
+        elif self.layout.ptr is not None:
+            yield from self._read_ragged()
         else:
             yield from self._read_tensors()
 
@@ -408,6 +425,26 @@ class Hdf5Replay(ReplayAdapter):
     ) -> Sample:
         t_last = int(cols["t"][-1])
         return Sample(self.layout.id, Modality.EVENT, t_last - off_ns, t_last, cols, meta)
+
+    def _read_ragged(self) -> Iterator[Sample]:
+        lay = self.layout
+        f = self._file()
+        assert lay.t is not None and lay.ptr is not None
+        lo, hi = self._row_range()
+        n = self._n()
+        if lay.ptr.length(f) != n + 1:
+            raise LayoutError(f"{lay.id}: ptr must have n_samples + 1 = {n + 1} entries")
+        meta: dict[str, Any] = {}
+        for a in range(lo, hi, self.chunk_rows):
+            b = min(hi, a + self.chunk_rows)
+            raw_t = lay.t.read(f, slice(a, b))
+            t_master = self.to_ns(raw_t)
+            t_source = self.to_ns(raw_t, master=False)
+            ptr = np.asarray(lay.ptr.read(f, slice(a, b + 1))).astype(np.int64)
+            block = lay.data[0].read(f, slice(int(ptr[0]), int(ptr[-1])))
+            for i in range(b - a):
+                rows = block[ptr[i] - ptr[0] : ptr[i + 1] - ptr[0]]
+                yield Sample(lay.id, lay.modality, int(t_source[i]), int(t_master[i]), rows, meta)
 
     def _read_tensors(self) -> Iterator[Sample]:
         lay = self.layout
@@ -465,7 +502,8 @@ def open_layout(
         if ok:
             assert path is not None
             with h5py.File(path, "r") as f:
-                refs = [*src.events.values(), *src.data, *([src.t] if src.t else [])]
+                refs = [*src.events.values(), *src.data]
+                refs += [r for r in (src.t, src.ptr) if r is not None]
                 ok = all(r.path in f for r in refs)
         if not ok:
             if src.optional and wanted is None:

@@ -8,9 +8,10 @@ Quirks handled here:
 * frames are ``images/<cam>/rectified/NNNNNN.png`` with one absolute µs timestamp per line in
   ``images/timestamps.txt`` (shared by both cameras). PNG decoding needs Pillow
   (``pip install senseai-ingest[images]``);
-* IMU (and LiDAR) were released later as ROS bags (``lidar_imu.zip``). Any ``*.bag`` found under
-  the sequence directory is scanned for ``sensor_msgs/Imu`` topics, which become the ``imu``
-  source (needs ``pip install senseai-ingest[ros2]``). LiDAR packets are not decoded.
+* IMU and LiDAR were released later as ROS bags (``lidar_imu.zip``). Any ``*.bag`` found under
+  the sequence directory is scanned: the first ``sensor_msgs/Imu`` topic becomes the ``imu``
+  source and the first ``sensor_msgs/PointCloud2`` topic the ``lidar`` source
+  (needs ``pip install senseai-ingest[ros2]``).
 """
 
 from __future__ import annotations
@@ -111,9 +112,10 @@ class DsecReplay:
         sources: Sequence[str] | None = None,
         frames: bool = True,
         imu: bool = True,
+        lidar: bool = True,
         **kw: Any,
     ) -> list[Adapter]:
-        """Return adapters for ``events_left/right``, ``rgb_left/right`` and ``imu`` (if present).
+        """Return adapters for ``events_left/right``, ``rgb_left/right``, ``imu``, ``lidar``.
 
         ``kw`` (``start_ns``, ``end_ns``, ``speed``, ``loop``) is passed to every adapter.
         """
@@ -131,8 +133,12 @@ class DsecReplay:
                     sid = f"rgb_{cam}"
                     if (images / cam).is_dir() and (wanted is None or sid in wanted):
                         adapters.append(DsecImageReplay(images, cam, source_id=sid, **kw))
-        if imu and (wanted is None or "imu" in wanted):
-            adapters += _imu_from_bags(root, **kw)
+        bag_wanted = {
+            "imu": imu and (wanted is None or "imu" in wanted),
+            "lidar": lidar and (wanted is None or "lidar" in wanted),
+        }
+        if any(bag_wanted.values()):
+            adapters += _from_bags(root, [k for k, v in bag_wanted.items() if v], **kw)
         if wanted is not None:
             missing = wanted - {a.source_id for a in adapters}
             if missing:
@@ -140,24 +146,29 @@ class DsecReplay:
         return adapters
 
 
-def _imu_from_bags(root: Path, **kw: Any) -> list[Adapter]:
-    """Return one ``imu`` adapter for the first ``sensor_msgs/Imu`` topic in any bag under root."""
+def _from_bags(root: Path, sids: Sequence[str], **kw: Any) -> list[Adapter]:
+    """Return ``imu`` / ``lidar`` adapters from the first bag under ``root`` carrying each."""
+    want = {"imu": Modality.IMU, "lidar": Modality.LIDAR}
     bags = sorted(p for p in root.glob("**/*.bag") if p.is_file())
     bags += sorted(p for p in root.glob("**/metadata.yaml") if p.parent != root)
     if not bags:
         return []
-    try:
-        from senseai_ingest.adapters.replay.rosbag import RosbagReplay
-    except ImportError:  # pragma: no cover - rosbags is a dev dependency
-        return []
+    from senseai_ingest.adapters.replay.rosbag import RosbagReplay
+
+    out: dict[str, Adapter] = {}
     for bag in bags:
         bag_path = bag.parent if bag.name == "metadata.yaml" else bag
         try:
             found = RosbagReplay.from_bag(bag_path, **kw)
         except AdapterNotAvailable:
-            log.warning("dsec.imu_skipped", bag=str(bag_path), reason="rosbags not installed")
+            log.warning("dsec.bag_skipped", bag=str(bag_path), reason="rosbags not installed")
             return []
-        imus = [a for a in found if a.spec().modality is Modality.IMU]
-        if imus:
-            return [RosbagReplay(bag_path, imus[0].topic, source_id="imu", **kw)]
-    return []
+        for sid in sids:
+            if sid in out:
+                continue
+            hits = [a for a in found if a.spec().modality is want[sid]]
+            if hits:
+                out[sid] = RosbagReplay(bag_path, hits[0].topic, source_id=sid, **kw)
+        if len(out) == len(sids):
+            break
+    return [out[s] for s in sids if s in out]

@@ -1,7 +1,7 @@
 # Copyright 2026 SenseAI Institute
 # SPDX-License-Identifier: Apache-2.0
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pytest
@@ -48,6 +48,7 @@ def bag(tmp_path_factory: pytest.TempPathFactory) -> Path:
         c_img = w.add_connection("/cam/image_raw", "sensor_msgs/msg/Image", typestore=ts)
         c_ev = w.add_connection("/dvs/events", "dvs_msgs/msg/EventArray", typestore=ts)
         c_x = w.add_connection("/chatter", "std_msgs/msg/String", typestore=ts)
+        c_pc = w.add_connection("/velodyne_points", "sensor_msgs/msg/PointCloud2", typestore=ts)
         for i in range(50):
             t = BASE + i * 2_000_000
             v3 = m["Vector3"]
@@ -88,13 +89,35 @@ def bag(tmp_path_factory: pytest.TempPathFactory) -> Path:
             )
             ea = m["EventArray"](header=_header(m, t), height=260, width=346, events=evs)
             w.write(c_ev, t, ts.serialize_cdr(ea, "dvs_msgs/msg/EventArray"))
+            if i % 5 == 0:
+                pts = np.array(
+                    [[1.0, 2.0, 3.0, 10.0], [np.nan, 0.0, 0.0, 0.0], [-1.0, 0.5, 0.25, 7.0]],
+                    dtype=np.float32,
+                )
+                pf = m["PointField"]
+                fields = [
+                    pf(name=n, offset=4 * j, datatype=7, count=1)
+                    for j, n in enumerate(("x", "y", "z", "intensity"))
+                ]
+                pc = m["PointCloud2"](
+                    header=_header(m, t, "velodyne"), height=1, width=3, fields=fields,
+                    is_bigendian=False, point_step=16, row_step=48,
+                    data=np.frombuffer(pts.tobytes(), dtype=np.uint8), is_dense=False,
+                )  # fmt: skip
+                w.write(c_pc, t, ts.serialize_cdr(pc, "sensor_msgs/msg/PointCloud2"))
         w.write(c_x, BASE, ts.serialize_cdr(m["String"](data="hi"), "std_msgs/msg/String"))
     return path
 
 
 def test_from_bag_discovers_supported_topics(bag: Path) -> None:
     ads = {a.source_id: a for a in RosbagReplay.from_bag(bag)}
-    assert set(ads) == {"imu", "cam_image_raw", "dvs_events"}
+    assert set(ads) == {"imu", "cam_image_raw", "dvs_events", "velodyne_points"}
+    with ads["velodyne_points"] as a:
+        scans = list(a.read())
+    assert len(scans) == 10 and scans[0].modality is Modality.LIDAR
+    assert scans[0].array.dtype == np.float32 and scans[0].array.shape == (2, 4)  # NaN row dropped
+    assert scans[0].array[1].tolist() == [-1.0, 0.5, 0.25, 7.0]
+    assert scans[0].meta["frame_id"] == "velodyne"
     assert ads["imu"].spec().modality is Modality.IMU
     assert ads["imu"].spec().nominal_rate_hz == pytest.approx(500, rel=0.05)
     with ads["imu"] as a:
@@ -159,5 +182,29 @@ def test_dsec_picks_up_imu_from_lidar_imu_bag(bag: Path, dsec_dir: Path, tmp_pat
     )
     ads = {a.source_id: a for a in DsecReplay.from_sequence(seq)}
     assert "imu" in ads and ads["imu"].spec().modality is Modality.IMU
-    assert "imu" not in {a.source_id for a in DsecReplay.from_sequence(seq, imu=False)}
+    assert "lidar" in ads and ads["lidar"].spec().modality is Modality.LIDAR
+    ids = {a.source_id for a in DsecReplay.from_sequence(seq, imu=False, lidar=False)}
+    assert not ids & {"imu", "lidar"}
     assert [a.source_id for a in DsecReplay.from_sequence(seq, sources=["imu"])] == ["imu"]
+    ticks = run_ticks(Aligner(list(ads.values()), AlignerConfig(tick_ns=10_000_000, max_ticks=5)))
+    assert len(ticks) == 5
+
+
+def test_pointcloud_without_xyz_and_without_intensity() -> None:
+    from senseai_ingest.adapters.replay.rosbag import _pointcloud
+
+    class F:
+        def __init__(self, name: str, offset: int) -> None:
+            self.name, self.offset, self.datatype, self.count = name, offset, 7, 1
+
+    class Msg:
+        is_bigendian = False
+        height, width, point_step = 1, 2, 12
+        fields: ClassVar[list[F]] = [F("x", 0), F("y", 4), F("z", 8)]
+        data = np.frombuffer(np.arange(6, dtype=np.float32).tobytes(), dtype=np.uint8)
+
+    pts = _pointcloud(Msg())
+    assert pts.shape == (2, 4) and pts[:, 3].tolist() == [0.0, 0.0]
+    Msg.fields = [F("x", 0)]
+    with pytest.raises(ValueError, match="without"):
+        _pointcloud(Msg())
